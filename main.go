@@ -14,7 +14,7 @@ func main() {
 	commands := map[string]command{
 		"attack": attackCmd(),
 		"report": reportCmd(),
-		"dump":   dumpCmd(),
+		"encode": encodeCmd(),
 	}
 
 	fs := flag.NewFlagSet("vegeta", flag.ExitOnError)
