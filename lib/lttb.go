@@ -1,5 +1,7 @@
 package vegeta
 
+import "errors"
+
 // a point in a line chart
 type point struct{ x, y float64 }
 
@@ -12,19 +14,19 @@ type bucket []point
 // https://skemman.is/bitstream/1946/15343/3/SS_MSthesis.pdf
 func lttb(count, threshold int, iter func(count int) ([]point, error)) ([]point, error) {
 	if threshold >= count || threshold == 0 {
-		return iter(count)
+		points, err := iter(count)
+		return points, err
+	}
+
+	if threshold < 3 {
+		return nil, errors.New("lttb: min threshold is 3")
 	}
 
 	// Bucket size. Leave room for start and end data points
-	var size int
-	if threshold < 3 {
-		size = count - 2
-	} else {
-		size = (count - 2) / (threshold - 2)
-	}
+	size := float64(count-2) / float64(threshold-2)
 
 	// Get the first point and the current bucket.
-	points, err := iter(1 + size)
+	points, err := iter(int(1 + size))
 	if err != nil {
 		return nil, err
 	}
@@ -33,14 +35,14 @@ func lttb(count, threshold int, iter func(count int) ([]point, error)) ([]point,
 	samples = append(samples, points[0]) // Always add the first point
 	current := points[1:]
 
-	for len(samples) < (threshold - 1) {
-		next, err := iter(size)
+	for i := 0; i < threshold-2; i++ {
+		// Calculate bucket boundaries (non inclusive hi)
+		lo := int(float64(i+1)*size) + 1
+		hi := int(float64(i+2)*size) + 1
+
+		next, err := iter(hi - lo)
 		if err != nil {
 			return nil, err
-		}
-
-		if len(next) == 0 {
-			break
 		}
 
 		samples = append(samples, lttbSample(samples[len(samples)-1], current, next))
@@ -48,7 +50,17 @@ func lttb(count, threshold int, iter func(count int) ([]point, error)) ([]point,
 	}
 
 	// Always add the last point unmodified
-	return append(samples, current[len(current)-1]), nil
+	if points, err = iter(count - len(samples)); err != nil {
+		return nil, err
+	} else if len(points) == 0 {
+		points = current
+	}
+
+	if len(points) > 0 {
+		samples = append(samples, points[len(points)-1])
+	}
+
+	return samples, nil
 }
 
 func lttbSample(a point, current, next bucket) (b point) {
