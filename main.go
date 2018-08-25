@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/pprof"
+	"sort"
 	"strings"
 )
 
@@ -14,6 +15,8 @@ func main() {
 	commands := map[string]command{
 		"attack": attackCmd(),
 		"report": reportCmd(),
+		"plot":   plotCmd(),
+		"encode": encodeCmd(),
 		"dump":   dumpCmd(),
 	}
 
@@ -26,10 +29,20 @@ func main() {
 		fmt.Println("Usage: vegeta [global flags] <command> [command flags]")
 		fmt.Printf("\nglobal flags:\n")
 		fs.PrintDefaults()
-		for name, cmd := range commands {
-			fmt.Printf("\n%s command:\n", name)
-			cmd.fs.PrintDefaults()
+
+		names := make([]string, 0, len(commands))
+		for name := range commands {
+			names = append(names, name)
 		}
+
+		sort.Strings(names)
+		for _, name := range names {
+			if cmd := commands[name]; cmd.fs != nil {
+				fmt.Printf("\n%s command:\n", name)
+				cmd.fs.PrintDefaults()
+			}
+		}
+
 		fmt.Println(examples)
 	}
 
@@ -88,10 +101,9 @@ var Version, Commit, Date string
 const examples = `
 examples:
   echo "GET http://localhost/" | vegeta attack -duration=5s | tee results.bin | vegeta report
-  vegeta attack -targets=targets.txt > results.bin
-  vegeta report -inputs=results.bin -reporter=json > metrics.json
-  cat results.bin | vegeta report -reporter=plot > plot.html
-  cat results.bin | vegeta report -reporter="hist[0,100ms,200ms,300ms]"
+  vegeta report -type=json results.bin > metrics.json
+  cat results.bin | vegeta plot > plot.html
+  cat results.bin | vegeta report -type="hist[0,100ms,200ms,300ms]"
 `
 
 type command struct {

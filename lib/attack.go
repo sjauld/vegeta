@@ -3,6 +3,7 @@ package vegeta
 import (
 	"crypto/tls"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
@@ -19,7 +20,10 @@ type Attacker struct {
 	client    http.Client
 	stopch    chan struct{}
 	workers   uint64
+	maxBody   int64
 	redirects int
+	seqmu     sync.Mutex
+	seq       uint64
 }
 
 const (
@@ -34,6 +38,9 @@ const (
 	DefaultConnections = 10000
 	// DefaultWorkers is the default initial number of workers used to carry an attack.
 	DefaultWorkers = 10
+	// DefaultMaxBody is the default max number of bytes to be read from response bodies.
+	// Defaults to no limit.
+	DefaultMaxBody = int64(-1)
 	// NoFollow is the value when redirects are not followed but marked successful
 	NoFollow = -1
 )
@@ -48,12 +55,18 @@ var (
 // NewAttacker returns a new Attacker with default options which are overridden
 // by the optionally provided opts.
 func NewAttacker(opts ...func(*Attacker)) *Attacker {
-	a := &Attacker{stopch: make(chan struct{}), workers: DefaultWorkers}
+	a := &Attacker{
+		stopch:  make(chan struct{}),
+		workers: DefaultWorkers,
+		maxBody: DefaultMaxBody,
+	}
+
 	a.dialer = &net.Dialer{
 		LocalAddr: &net.TCPAddr{IP: DefaultLocalAddr.IP, Zone: DefaultLocalAddr.Zone},
 		KeepAlive: 30 * time.Second,
 		Timeout:   DefaultTimeout,
 	}
+
 	a.client = http.Client{
 		Transport: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
@@ -192,11 +205,28 @@ func H2C(enabled bool) func(*Attacker) {
 	}
 }
 
+// MaxBody returns a functional option which limits the max number of bytes
+// read from response bodies. Set to -1 to disable any limits.
+func MaxBody(n int64) func(*Attacker) {
+	return func(a *Attacker) { a.maxBody = n }
+}
+
+// A Rate of hits during an Attack.
+type Rate struct {
+	Freq int           // Frequency (number of occurrences) per ...
+	Per  time.Duration // Time unit, usually 1s
+}
+
+// IsZero returns true if either Freq or Per are zero valued.
+func (r Rate) IsZero() bool {
+	return r.Freq == 0 || r.Per == 0
+}
+
 // Attack reads its Targets from the passed Targeter and attacks them at
 // the rate specified for the given duration. When the duration is zero the attack
 // runs until Stop is called. Results are sent to the returned channel as soon
 // as they arrive and will have their Attack field set to the given name.
-func (a *Attacker) Attack(tr Targeter, rate uint64, du time.Duration, name string) <-chan *Result {
+func (a *Attacker) Attack(tr Targeter, r Rate, du time.Duration, name string) <-chan *Result {
 	var workers sync.WaitGroup
 	results := make(chan *Result)
 	ticks := make(chan uint64)
@@ -209,15 +239,15 @@ func (a *Attacker) Attack(tr Targeter, rate uint64, du time.Duration, name strin
 		defer close(results)
 		defer workers.Wait()
 		defer close(ticks)
-		interval := 1e9 / rate
-		hits := rate * uint64(du.Seconds())
-		began, seq := time.Now(), uint64(0)
+		interval := uint64(r.Per.Nanoseconds() / int64(r.Freq))
+		hits := uint64(du) / interval
+		began, count := time.Now(), uint64(0)
 		for {
-			now, next := time.Now(), began.Add(time.Duration(seq*interval))
+			now, next := time.Now(), began.Add(time.Duration(count*interval))
 			time.Sleep(next.Sub(now))
 			select {
-			case ticks <- seq:
-				if seq++; seq == hits {
+			case ticks <- count:
+				if count++; count == hits {
 					return
 				}
 			case <-a.stopch:
@@ -244,14 +274,14 @@ func (a *Attacker) Stop() {
 
 func (a *Attacker) attack(tr Targeter, name string, workers *sync.WaitGroup, ticks <-chan uint64, results chan<- *Result) {
 	defer workers.Done()
-	for seq := range ticks {
-		results <- a.hit(tr, name, seq)
+	for range ticks {
+		results <- a.hit(tr, name)
 	}
 }
 
-func (a *Attacker) hit(tr Targeter, name string, seq uint64) *Result {
+func (a *Attacker) hit(tr Targeter, name string) *Result {
 	var (
-		res = Result{Attack: name, Seq: seq}
+		res = Result{Attack: name}
 		tgt Target
 		err error
 	)
@@ -272,16 +302,27 @@ func (a *Attacker) hit(tr Targeter, name string, seq uint64) *Result {
 		return &res
 	}
 
+	a.seqmu.Lock()
 	res.Timestamp = time.Now()
+	res.Seq = a.seq
+	a.seq++
+	a.seqmu.Unlock()
+
 	r, err := a.client.Do(req)
 	if err != nil {
 		return &res
 	}
 	defer r.Body.Close()
 
-	if res.Body, err = ioutil.ReadAll(r.Body); err != nil {
+	body := io.Reader(r.Body)
+	if a.maxBody >= 0 {
+		body = io.LimitReader(r.Body, a.maxBody)
+	}
+
+	if res.Body, err = ioutil.ReadAll(body); err != nil {
 		return &res
 	}
+
 	res.Latency = time.Since(res.Timestamp)
 	res.BytesIn = uint64(len(res.Body))
 
