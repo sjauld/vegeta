@@ -85,6 +85,13 @@ func NewAttacker(opts ...func(*Attacker)) *Attacker {
 	return a
 }
 
+// NewAttackerWithClient allows you to use a custom http.Client in your attacker
+func NewAttackerWithClient(c http.Client, opts ...func(*Attacker)) *Attacker {
+	a := NewAttacker(opts...)
+	a.client = c
+	return a
+}
+
 // Workers returns a functional option which sets the initial number of workers
 // an Attacker uses to hit its targets. More workers may be spawned dynamically
 // to sustain the requested rate in the face of slow responses and errors.
