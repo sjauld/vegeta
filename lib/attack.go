@@ -211,6 +211,11 @@ func MaxBody(n int64) func(*Attacker) {
 	return func(a *Attacker) { a.maxBody = n }
 }
 
+// Client returns a functional option that allows you to bring your own http.Client
+func Client(c *http.Client) func(*Attacker) {
+	return func(a *Attacker) { a.client = *c }
+}
+
 // A Rate of hits during an Attack.
 type Rate struct {
 	Freq int           // Frequency (number of occurrences) per ...
@@ -292,6 +297,12 @@ func (a *Attacker) hit(tr Targeter, name string) *Result {
 		}
 	}()
 
+	a.seqmu.Lock()
+	res.Timestamp = time.Now()
+	res.Seq = a.seq
+	a.seq++
+	a.seqmu.Unlock()
+
 	if err = tr(&tgt); err != nil {
 		a.Stop()
 		return &res
@@ -301,12 +312,6 @@ func (a *Attacker) hit(tr Targeter, name string) *Result {
 	if err != nil {
 		return &res
 	}
-
-	a.seqmu.Lock()
-	res.Timestamp = time.Now()
-	res.Seq = a.seq
-	a.seq++
-	a.seqmu.Unlock()
 
 	r, err := a.client.Do(req)
 	if err != nil {
